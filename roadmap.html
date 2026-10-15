@@ -26,49 +26,127 @@
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
+class Point {
+    constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+    set(x, y)  { this.x = x; this.y = y; return this; }
+    setFrom(p) { this.x = p.x; this.y = p.y; return this; }
+    clone()    { return new Point(this.x, this.y); }
+    distTo(p)  { return Math.hypot(this.x - p.x, this.y - p.y); }
+}
+
+class Line {
+    constructor(a, b, name = '') {
+        this.a = a;
+        this.b = b;
+        this.name = name;
+    }
+
+    metrics() {
+        const dx = this.b.x - this.a.x, dy = this.b.y - this.a.y;
+        const len = Math.hypot(dx, dy);
+        if (len === 0) return { len: 0, ux: 0, uy: 0 };
+        return { len, ux: dx / len, uy: dy / len };
+    }
+
+    // Координаты точки в системе отрезка: X вдоль, Y перпендикуляр (CCW)
+    segmentCoords(p) {
+        const { len, ux, uy } = this.metrics();
+        if (len === 0) return { X: 0, Y: 0, len: 0, ux: 0, uy: 0 };
+        const px = p.x - this.a.x, py = p.y - this.a.y;
+        return {
+            X: px * ux + py * uy,
+            Y: px * (-uy) + py * ux,
+            len, ux, uy,
+        };
+    }
+
+    // Ближайшая точка на отрезке. Возвращает Point с .dist и .t
+    closestOnSegment(p) {
+        const dx = this.b.x - this.a.x;
+        const dy = this.b.y - this.a.y;
+        const len2 = dx * dx + dy * dy;
+        let t = len2 === 0 ? 0
+            : ((p.x - this.a.x) * dx + (p.y - this.a.y) * dy) / len2;
+        t = Math.max(0, Math.min(1, t));
+        const hit = new Point(this.a.x + t * dx, this.a.y + t * dy);
+        hit.dist = p.distTo(hit);
+        hit.t = t;
+        return hit;
+    }
+
+    draw(ctx, opts = {}) {
+        const {
+            color = '#4af', dash = null,
+            dotStart = true, startColor  = color, startRadius = 5,
+            dotEnd   = true, endColor    = color, endRadius   = 5,
+        } = opts;
+
+        const labelStart = this.name[0] ?? '';
+        const labelEnd   = this.name[1] ?? '';
+
+        if (dash) ctx.setLineDash(dash);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.a.x, this.a.y);
+        ctx.lineTo(this.b.x, this.b.y);
+        ctx.stroke();
+        if (dash) ctx.setLineDash([]);
+
+        ctx.font = '14px monospace';
+        if (dotStart) {
+            ctx.fillStyle = startColor;
+            ctx.beginPath();
+            ctx.arc(this.a.x, this.a.y, startRadius, 0, Math.PI * 2);
+            ctx.fill();
+            if (labelStart) ctx.fillText(labelStart, this.a.x + 8, this.a.y - 8);
+        }
+        if (dotEnd) {
+            ctx.fillStyle = endColor;
+            ctx.beginPath();
+            ctx.arc(this.b.x, this.b.y, endRadius, 0, Math.PI * 2);
+            ctx.fill();
+            if (labelEnd) ctx.fillText(labelEnd,   this.b.x + 8, this.b.y - 8);
+        }
+    }
+}
+
 let W = 0, H = 0;
-const A = { x: 520, y: 320 };
-const B = { x: 1100, y: 620 };
-let P = { x: 400, y: 300 };
+const A = new Point(520, 320);
+const B = new Point(1100, 620);
+const C = new Point();
+const D = new Point();
+const P = new Point(400, 300);
+
+const AB = new Line(A, B, 'AB');
+const BC = new Line(B, C, 'BC');
+const BD = new Line(B, D, 'BD');
+const dropLine = new Line(P, new Point(), '');
 
 function resize() {
     const dpr = window.devicePixelRatio || 1;
     W = window.innerWidth;
     H = window.innerHeight;
-    canvas.width    = Math.round(W * dpr);
+    canvas.width  = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
-    canvas.style.width    = W + 'px';
+    canvas.style.width  = W + 'px';
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     render();
 }
 
+const tmp = new Point();
 function localPos(e) {
     const r = canvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    return tmp.set(e.clientX - r.left, e.clientY - r.top);
 }
 
 canvas.addEventListener('pointermove', e => {
-    P = localPos(e);
+    P.setFrom(localPos(e));
     render();
 });
 
-// Координаты P в системе отрезка AB:
-// X — вдоль AB, Y — перпендикуляр (CCW от направления AB)
-function segmentCoords(P, A, B) {
-    const dx = B.x - A.x, dy = B.y - A.y;
-    const len = Math.hypot(dx, dy);
-    const ux = dx / len, uy = dy / len;
-    const px = P.x - A.x, py = P.y - A.y;
-    const X = px * ux + py * uy;
-    const Y = px * (-uy) + py * ux;
-    return { X, Y, len, ux, uy };
-}
-
-function render() {
-    ctx.clearRect(0, 0, W, H);
-
-    // сетка
+function drawGrid() {
     ctx.strokeStyle = '#222';
     ctx.lineWidth = 1;
     for (let x = 0; x < W; x += 50) {
@@ -77,65 +155,66 @@ function render() {
     for (let y = 0; y < H; y += 50) {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
     }
+}
 
-    // отрезок AB
-    ctx.strokeStyle = '#4af';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(A.x, A.y);
-    ctx.lineTo(B.x, B.y);
-    ctx.stroke();
-
-    // точки A и B
-    ctx.fillStyle = '#4af';
-    ctx.beginPath(); ctx.arc(A.x, A.y, 5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(B.x, B.y, 5, 0, Math.PI * 2); ctx.fill();
-
-    ctx.font = '14px monospace';
-    ctx.fillText('A', A.x + 8, A.y - 8);
-    ctx.fillText('B', B.x + 8, B.y - 8);
-
-    // локальные координаты
-    const { X, Y, len, ux, uy } = segmentCoords(P, A, B);
-
-    // проекция P на отрезок AB
-    const projX = X < 0 ? A.x : X > len ? B.x : A.x + ux * X;
-    const projY = X < 0 ? A.y : X > len ? B.y : A.y + uy * X;
-
-    // пунктир от P до проекции
-    ctx.strokeStyle = '#f80';
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(P.x, P.y);
-    ctx.lineTo(projX, projY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // точка проекции
-    ctx.fillStyle = '#f80';
-    ctx.beginPath(); ctx.arc(projX, projY, 3, 0, Math.PI * 2); ctx.fill();
-
-    // точка P
-    ctx.fillStyle = '#f44';
-    ctx.beginPath(); ctx.arc(P.x, P.y, 6, 0, Math.PI * 2); ctx.fill();
-
-    // расстояние до отрезка по трём случаям
-    const dist = Math.hypot(P.x - projX, P.y - projY);
-    const closest = X < 0 ? 'A' : (X > len ? 'B' : 'проекция');
-
-    // инфа в углу
+function drawInfo(lines) {
     ctx.fillStyle = '#eee';
     ctx.font = '14px monospace';
-    const lines = [
-        `P = (${P.x.toFixed(1)}, ${P.y.toFixed(1)})`,
-        `X = ${X.toFixed(1)}     Y = ${Y.toFixed(1)}     |AB| = ${len.toFixed(1)}`,
-        `расстояние = ${dist.toFixed(2)}    (до ${closest})`,
-    ];
     let ty = 24;
     for (const line of lines) {
         ctx.fillText(line, 16, ty);
         ty += 20;
     }
+}
+
+function render() {
+    ctx.clearRect(0, 0, W, H);
+    drawGrid();
+
+    // C и D - усики стрелочки AB
+    const { len, ux, uy } = AB.metrics();
+    const c45 = Math.SQRT1_2;
+    const barb = len / 4;
+    C.set(
+        B.x + c45 * barb * ( uy - ux),
+        B.y + c45 * barb * (-ux - uy),
+    );
+    D.set(
+        B.x + c45 * barb * (-ux - uy),
+        B.y + c45 * barb * ( ux - uy),
+    );
+
+    // отрисовка
+    AB.draw(ctx);
+    BC.draw(ctx, { dotStart: false });
+    BD.draw(ctx, { dotStart: false });
+
+    // hit-test: hits + reduce
+    const hits = [AB, BC, BD].map(line => {
+        const hit = line.closestOnSegment(P);
+        hit.line = line;
+        return hit;
+    });
+    const proj = hits.reduce((a, b) => a.dist <= b.dist ? a : b);
+    console.log(proj);
+
+    dropLine.b.setFrom(proj);
+    dropLine.draw(ctx, {
+        color:      '#f80',
+        dash:       [4, 4],
+        startColor: '#f44', startRadius: 6,  // точка P — красная
+        endColor:   '#f80', endRadius:   3,  // точка proj — оранжевая
+    });
+
+    const { X, Y } = AB.segmentCoords(P);
+    const dist = proj.dist;
+    const closest = `${proj.line.name} (t = ${proj.t.toFixed(2)})`;
+
+    drawInfo([
+        `P = (${P.x.toFixed(1)}, ${P.y.toFixed(1)})`,
+        `X = ${X.toFixed(1)}  Y = ${Y.toFixed(1)}  |AB| = ${len.toFixed(1)}`,
+        `расстояние = ${dist.toFixed(2)}  (до ${closest})`,
+    ]);
 }
 
 window.addEventListener('resize', resize);
