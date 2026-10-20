@@ -509,9 +509,6 @@ function resize() {
     render();
 }
 
-window.addEventListener('resize', resize);
-resize();
-
 const tmp = new Point();
 
 function screenToWorld(sx, sy) {
@@ -604,6 +601,71 @@ function render() {
 }
 
 
+const STORAGE_KEY = 'roadmap.v1';
+let saveTimer = null;
+
+function saveState() {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            cam: { x: cam.x, y: cam.y, k: cam.k },
+            nodes: nodes.map(n => ({
+                title: n.title,
+                x: n.point.x,
+                y: n.point.y,
+                textColW: n.textColW,
+            })),
+            order: nodes.map(n => n.title),
+        }));
+    } catch {}
+}
+
+function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveState, 300);
+}
+
+function loadState() {
+    let raw;
+    try { raw = localStorage.getItem(STORAGE_KEY); } catch { return; }
+    if (!raw) return;
+    let state;
+    try { state = JSON.parse(raw); } catch { return; }
+
+    if (state.cam) {
+        const c = state.cam;
+        if (typeof c.x === 'number') cam.x = c.x;
+        if (typeof c.y === 'number') cam.y = c.y;
+        if (typeof c.k === 'number') cam.k = Math.max(0.1, Math.min(8, c.k));
+    }
+
+    const byTitle = new Map(nodes.map(n => [n.title, n]));
+
+    if (Array.isArray(state.nodes)) {
+        for (const s of state.nodes) {
+            const node = byTitle.get(s.title);
+            if (!node) continue;
+            if (typeof s.x === 'number' && typeof s.y === 'number')
+                node.point.set(s.x, s.y);
+            if (typeof s.textColW === 'number')
+                node.textColW = s.textColW;
+        }
+    }
+
+    if (Array.isArray(state.order)) {
+        const seen = new Set();
+        const ordered = [];
+        for (const t of state.order) {
+            const n = byTitle.get(t);
+            if (n && !seen.has(n)) { seen.add(n); ordered.push(n); }
+        }
+        for (const n of nodes) if (!seen.has(n)) ordered.push(n);
+        nodes.splice(0, nodes.length, ...ordered);
+    }
+}
+
+loadState();
+
+
 let activeDrag = null;
 
 function nodeAt(p, threshold) {
@@ -680,6 +742,7 @@ canvas.addEventListener('pointerup', e => {
     }
     canvas.releasePointerCapture(e.pointerId);
     updateCursor(worldPos(e));
+    saveState();
 });
 canvas.addEventListener('pointercancel', () => {
     if (activeDrag) {
@@ -700,9 +763,12 @@ canvas.addEventListener('wheel', e => {
     zoomAt(sx, sy, Math.pow(1.1, -dy / 100));
     P.setFrom(worldPos(e));
     render();
+    scheduleSave();
 }, { passive: false }); // passive обязателен - без него preventDefault в wheel молча игнорируется
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
+window.addEventListener('resize', resize);
+resize();
 </script>
 </body>
 </html>
