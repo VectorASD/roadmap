@@ -32,6 +32,15 @@ class Point {
     setFrom(p) { this.x = p.x; this.y = p.y; return this; }
     clone()    { return new Point(this.x, this.y); }
     distTo(p)  { return Math.hypot(this.x - p.x, this.y - p.y); }
+
+    closestInRect(p, w, h) {
+        const left = this.x, top = this.y, right = this.x + w, bottom = this.y + h;
+        const cx = p.x < left ? left : p.x < right  ? p.x : right;
+        const cy = p.y < top  ? top  : p.y < bottom ? p.y : bottom;
+        const hit = new Point(cx, cy);
+        hit.dist = p.distTo(hit);
+        return hit;
+    }
 }
 
 class Line {
@@ -112,7 +121,7 @@ class Line {
 }
 
 class Arrow extends Line {
-    constructor(a = new Point(), b = new Point(), name = '') {
+    constructor(a = new Point(), b = new Point(), name = 'AB') {
         super(a, b, name);  // arrow IS the AB line
         this.c  = new Point();
         this.d  = new Point();
@@ -195,59 +204,74 @@ const CHECK_COLORS = {
     na:       { fill: '#888888', stroke: '#555555', mark: '#555555' },
 };
 
-function drawCheckbox(ctx, x, y, size, type) {
-    const c = CHECK_COLORS[type] || CHECK_COLORS.todo;
-    const r = CHECK_RADIUS;
-
-    ctx.beginPath();
-    ctx.roundRect(x, y, size, size, r);
-    ctx.fillStyle = c.fill;
-    ctx.fill();
-
-    if (type === 'doing') {
-        ctx.save();
-        ctx.clip();
-        ctx.fillStyle = c.stroke;
-        ctx.fillRect(x, y, size / 2, size);
-        ctx.restore();
+class Checkbox {
+    constructor(point = new Point(), size = CHECK_SIZE, type = 'todo') {
+        this.point = point;
+        this.size  = size;
+        this.type  = type;
     }
 
-    ctx.beginPath();
-    ctx.roundRect(x, y, size, size, r);
-    ctx.strokeStyle = c.stroke;
-    ctx.lineWidth = 1.5;
-    if (type === 'deferred') ctx.setLineDash([2, 2]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    closest(p) {
+        return this.point.closestInRect(p, this.size, this.size);
+    }
 
-    if (type === 'done') {
-        ctx.strokeStyle = c.mark;
-        ctx.lineWidth = 2;
-        ctx.lineCap = 'round';
+    draw(ctx) {
+        const { x, y } = this.point;
+        const size = this.size;
+        const type = this.type;
+        const c = CHECK_COLORS[type] || CHECK_COLORS.todo;
+        const r = CHECK_RADIUS;
+
         ctx.beginPath();
-        ctx.moveTo(x + 3, y + size / 2);
-        ctx.lineTo(x + size * 0.42, y + size - 4);
-        ctx.lineTo(x + size - 3, y + 3);
-        ctx.stroke();
-        ctx.lineCap = 'butt';
-    } else if (type === 'blocked') {
-        ctx.strokeStyle = c.mark;
-        ctx.lineWidth = 2;
-        ctx.lineCap = 'round';
+        ctx.roundRect(x, y, size, size, r);
+        ctx.fillStyle = c.fill;
+        ctx.fill();
+
+        if (type === 'doing') {
+            ctx.save();
+            ctx.clip();
+            ctx.fillStyle = c.stroke;
+            ctx.fillRect(x, y, size / 2, size);
+            ctx.restore();
+        }
+
         ctx.beginPath();
-        ctx.moveTo(x + 4, y + 4);
-        ctx.lineTo(x + size - 4, y + size - 4);
-        ctx.moveTo(x + size - 4, y + 4);
-        ctx.lineTo(x + 4, y + size - 4);
+        ctx.roundRect(x, y, size, size, r);
+        ctx.strokeStyle = c.stroke;
+        ctx.lineWidth = 1.5;
+        if (type === 'deferred') ctx.setLineDash([2, 2]);
         ctx.stroke();
-        ctx.lineCap = 'butt';
-    } else if (type === 'na') {
-        ctx.strokeStyle = c.mark;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(x + 3, y + size / 2);
-        ctx.lineTo(x + size - 3, y + size / 2);
-        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (type === 'done') {
+            ctx.strokeStyle = c.mark;
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x + 3, y + size / 2);
+            ctx.lineTo(x + size * 0.42, y + size - 4);
+            ctx.lineTo(x + size - 3, y + 3);
+            ctx.stroke();
+            ctx.lineCap = 'butt';
+        } else if (type === 'blocked') {
+            ctx.strokeStyle = c.mark;
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x + 4, y + 4);
+            ctx.lineTo(x + size - 4, y + size - 4);
+            ctx.moveTo(x + size - 4, y + 4);
+            ctx.lineTo(x + 4, y + size - 4);
+            ctx.stroke();
+            ctx.lineCap = 'butt';
+        } else if (type === 'na') {
+            ctx.strokeStyle = c.mark;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x + 3, y + size / 2);
+            ctx.lineTo(x + size - 3, y + size / 2);
+            ctx.stroke();
+        }
     }
 }
 
@@ -261,6 +285,7 @@ const TEXT_LINE_H = 18;
 
 const NODE_HIT_THRESHOLD    = 8;
 const NODE_RESIZE_THRESHOLD = 8;
+const CELL_HIT_THRESHOLD    = 4;
 
 class Node {
     constructor(opts) {
@@ -275,6 +300,7 @@ class Node {
         this._effectiveTextW = 0;
         this.rightEdge = new Line(new Point(), new Point());
         this._drag     = null;
+        this._cells    = [];
     }
     get dragMode() { return this._drag?.mode ?? null; }
 
@@ -297,11 +323,10 @@ class Node {
 
         // 2. Целевая ширина для wrap: user target, clamped
         let targetW;
-        if (this.rows.length === 0) {
+        if (this.rows.length === 0)
             targetW = 0;
-        } else {
+        else
             targetW = Math.max(longestWord, Math.min(this.textColW, naturalMax));
-        }
 
         // 3. Wrap по target
         this._lines = this.rows.map(row =>
@@ -310,12 +335,11 @@ class Node {
 
         // 4. Видимая ширина = max по фактическим строкам после wrap
         let actualW = 0;
-        for (const lines of this._lines) {
+        for (const lines of this._lines)
             for (const line of lines) {
                 const w = ctx.measureText(line).width;
                 if (w > actualW) actualW = w;
             }
-        }
         this._effectiveTextW = actualW;
 
         // 5. Дальше - layout по actualW, не по targetW
@@ -342,6 +366,35 @@ class Node {
         };
         this.rightEdge.a.set(this._bounds.right, this._bounds.top);
         this.rightEdge.b.set(this._bounds.right, this._bounds.bottom);
+
+        this._cells = [];
+        let cellRy = this.point.y + NODE_PAD + HEADER_H + 0.5 * ROW_GAP;
+        for (let i = 0; i < this.rows.length; i++) {
+            const row   = this.rows[i];
+            const lines = this._lines[i];
+            const rowH  = Math.max(CHECK_SIZE, lines.length * TEXT_LINE_H);
+
+            const cbY = cellRy + (rowH - CHECK_SIZE) / 2;
+            for (let c = 0; c < this.checkCols; c++) {
+                const cbX  = this.point.x + NODE_PAD + c * CHECK_COL_W + (CHECK_COL_W - CHECK_SIZE) / 2;
+                const type = (row.checks && row.checks[c]) || 'todo';
+                const cb   = new Checkbox(new Point(cbX, cbY), CHECK_SIZE, type);
+                this._cells.push({
+                    kind: 'check', row: i, col: c,
+                    point: cb.point, w: CHECK_SIZE, h: CHECK_SIZE,
+                    target: cb,
+                });
+            }
+
+            const tx = this.point.x + NODE_PAD + this.checkCols * CHECK_COL_W + TEXT_PAD;
+            this._cells.push({
+                kind: 'text', row: i,
+                point: new Point(tx, cellRy), w: actualW, h: rowH,
+            });
+
+            cellRy += rowH;
+            if (i < this.rows.length - 1) cellRy += ROW_GAP;
+        }
         return this._size;
     }
 
@@ -350,24 +403,28 @@ class Node {
         return this._bounds;
     }
 
-    // Точка на прямоугольнике, ближайшая к p. Возвращает Point с .dist
     closest(p) {
-        const { left, top, right, bottom } = this.bounds();
-        const cx = p.x < left ? left : p.x < right ? p.x : right;
-        const cy = p.y < top  ? top : p.y < bottom ? p.y : bottom;
-
-        const hit = new Point(cx, cy);
-        hit.dist = p.distTo(hit);
-        return hit;
+        return this.point.closestInRect(p, this._size.w, this._size.h);
+    }
+    closestCell(p) {
+        let best = null;
+        for (const cell of this._cells) {
+            const hit = cell.point.closestInRect(p, cell.w, cell.h);
+            if (!best || hit.dist < best.dist) {
+                hit.cell = cell;
+                best = hit;
+            }
+        }
+        return best;
     }
 
     draw(ctx) {
-        const { w } = this.measure(ctx);
-        const { left: x, top: y, bottom } = this.bounds();
+        const { w, h } = this.measure(ctx);
+        const { left: x, top: y } = this.bounds();
 
         // карточка
         ctx.beginPath();
-        ctx.roundRect(x, y, w, bottom - y, 8);
+        ctx.roundRect(x, y, w, h, 8);
         ctx.fillStyle = '#1a1a1a';
         ctx.fill();
         ctx.strokeStyle = '#333';
@@ -381,25 +438,15 @@ class Node {
         ctx.textAlign = 'left';
         ctx.fillText(this.title, x + NODE_PAD, y + 0.75 * NODE_PAD + 0.5 * HEADER_H);
 
-        // строки (переменная высота)
+        // строки: зебра + текст
         let ry = y + NODE_PAD + HEADER_H + 0.5 * ROW_GAP;
         for (let i = 0; i < this.rows.length; i++) {
-            const row   = this.rows[i];
             const lines = this._lines[i];
             const rowH  = Math.max(CHECK_SIZE, lines.length * TEXT_LINE_H);
 
             ctx.fillStyle = i % 2 ? '#28283a' : '#202030';
             ctx.fillRect(x + NODE_PAD, ry - 0.5 * ROW_GAP, w - 2 * NODE_PAD, rowH + ROW_GAP);
 
-            // чекбоксы - по вертикали по центру строки
-            const cbY = ry + (rowH - CHECK_SIZE) / 2;
-            for (let c = 0; c < this.checkCols; c++) {
-                const cbX = x + NODE_PAD + c * CHECK_COL_W + (CHECK_COL_W - CHECK_SIZE) / 2;
-                const type = (row.checks && row.checks[c]) || 'todo';
-                drawCheckbox(ctx, cbX, cbY, CHECK_SIZE, type);
-            }
-
-            // текст - блок строк по вертикали по центру
             const tx = x + NODE_PAD + this.checkCols * CHECK_COL_W + TEXT_PAD;
             const blockH = lines.length * TEXT_LINE_H;
             const y0 = ry + (rowH - blockH) / 2 + TEXT_LINE_H / 2;
@@ -413,6 +460,10 @@ class Node {
             ry += rowH;
             if (i < this.rows.length - 1) ry += ROW_GAP;
         }
+
+        // чекбоксы поверх
+        for (const cell of this._cells)
+            if (cell.kind === 'check') cell.target.draw(ctx);
     }
 
     beginDrag(p, resizeThreshold = NODE_RESIZE_THRESHOLD) {
@@ -458,6 +509,27 @@ class Node {
             this.textColW = Math.max(0, d.originTextColW + dx);
         }
         return { dx, dy };
+    }
+
+    click(p, threshold = CELL_HIT_THRESHOLD) {
+        const hit = this.closestCell(p);
+        if (!hit || hit.dist > threshold)
+            return false;
+
+        const cell = hit.cell;
+        if (cell.kind === 'check') {
+            const row = this.rows[cell.row];
+            row.checks = row.checks || [];
+            const cur = row.checks[cell.col] || 'todo';
+            row.checks[cell.col] = cur === 'done' ? 'todo' : 'done';
+            return true;
+        }
+        if (cell.kind === 'text') {
+            console.log('click on text, row', cell.row);
+            // TODO: start editor
+            return true;
+        }
+        return false;
     }
 }
 
@@ -602,7 +674,7 @@ const A = new Point(1020, 320);
 const B = new Point(1600, 620);
 const P = new Point(400, 300);
 
-const arrow    = new Arrow(A, B, 'AB');
+const arrow    = new Arrow(A, B);
 const dropLine = new Line(P, new Point(), '');
 
 function render() {
@@ -648,6 +720,7 @@ function saveState() {
                 x: n.point.x,
                 y: n.point.y,
                 textColW: n.textColW,
+                rows: n.rows.map(r => ({ checks: (r.checks || []).slice() })),
             })),
             order: nodes.map(n => n.title),
         }));
@@ -662,7 +735,8 @@ function scheduleSave() {
 function loadState() {
     let raw;
     try { raw = localStorage.getItem(STORAGE_KEY); } catch { return; }
-    if (!raw) return;
+    if (!raw)
+        return;
     let state;
     try { state = JSON.parse(raw); } catch { return; }
 
@@ -675,7 +749,7 @@ function loadState() {
 
     const byTitle = new Map(nodes.map(n => [n.title, n]));
 
-    if (Array.isArray(state.nodes)) {
+    if (Array.isArray(state.nodes))
         for (const s of state.nodes) {
             const node = byTitle.get(s.title);
             if (!node) continue;
@@ -683,17 +757,27 @@ function loadState() {
                 node.point.set(s.x, s.y);
             if (typeof s.textColW === 'number')
                 node.textColW = s.textColW;
+            if (Array.isArray(s.rows))
+                for (let i = 0; i < s.rows.length && i < node.rows.length; i++) {
+                    const sr = s.rows[i];
+                    if (sr && Array.isArray(sr.checks))
+                        node.rows[i].checks = sr.checks.slice();
+                }
         }
-    }
 
     if (Array.isArray(state.order)) {
         const seen = new Set();
         const ordered = [];
         for (const t of state.order) {
             const n = byTitle.get(t);
-            if (n && !seen.has(n)) { seen.add(n); ordered.push(n); }
+            if (n && !seen.has(n)) {
+                seen.add(n);
+                ordered.push(n);
+            }
         }
-        for (const n of nodes) if (!seen.has(n)) ordered.push(n);
+        for (const n of nodes)
+            if (!seen.has(n))
+                ordered.push(n);
         nodes.splice(0, nodes.length, ...ordered);
     }
 }
@@ -707,8 +791,9 @@ const DRAG_ACTIVATE_PX = 16;   // или на сколько экранных п
 let activation = null;
 let activeDrag = null;
 
-function beginActivation(e) {
+function beginActivation(e, node) {
     activation = {
+        node,
         startScreenX: e.clientX,
         startScreenY: e.clientY,
         startTime: performance.now(),
@@ -786,7 +871,7 @@ canvas.addEventListener('pointerdown', e => {
         pan = { startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y };
         canvas.style.cursor = 'grabbing';
     }
-    beginActivation(e);
+    beginActivation(e, node);
     canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', e => {
@@ -813,17 +898,27 @@ canvas.addEventListener('pointermove', e => {
     render();
 });
 canvas.addEventListener('pointerup', e => {
+    const p           = worldPos(e);
+    const wasClick    = !activation || !activation.activated;
+    const clickedNode = activation?.node ?? null;
+
     if (activeDrag) {
         activeDrag.endDrag();
         activeDrag = null;
     } else if (pan)
         pan = null;
-    else
-        return;
+
     activation = null;
     canvas.releasePointerCapture(e.pointerId);
-    updateCursor(worldPos(e));
-    saveState();
+    updateCursor(p);
+
+    if (wasClick) {
+        if (clickedNode && clickedNode.click(p, CELL_HIT_THRESHOLD / cam.k)) {
+            render();
+            saveState();
+        }
+    } else
+        saveState();
 });
 canvas.addEventListener('pointercancel', () => {
     if (activeDrag) {
