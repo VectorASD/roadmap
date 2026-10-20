@@ -35,7 +35,7 @@ class Point {
 }
 
 class Line {
-    constructor(a, b, name = '') {
+    constructor(a = new Point(), b = new Point(), name = '') {
         this.a = a;
         this.b = b;
         this.name = name;
@@ -112,7 +112,7 @@ class Line {
 }
 
 class Arrow extends Line {
-    constructor(a, b, name = '') {
+    constructor(a = new Point(), b = new Point(), name = '') {
         super(a, b, name);  // arrow IS the AB line
         this.c  = new Point();
         this.d  = new Point();
@@ -259,6 +259,9 @@ const TEXT_PAD    = 8;
 const TEXT_MIN_W  = 200;
 const TEXT_LINE_H = 18;
 
+const NODE_HIT_THRESHOLD    = 8;
+const NODE_RESIZE_THRESHOLD = 8;
+
 class Node {
     constructor(opts) {
         this.point     = opts.point || new Point();
@@ -270,7 +273,10 @@ class Node {
         this._size     = null;
         this._bounds   = null;
         this._effectiveTextW = 0;
+        this.rightEdge = new Line(new Point(), new Point());
+        this._drag     = null;
     }
+    get dragMode() { return this._drag?.mode ?? null; }
 
     measure(ctx) {
         ctx.font = '13px monospace';
@@ -334,6 +340,8 @@ class Node {
             right:  this.point.x + w,
             bottom: this.point.y + h,
         };
+        this.rightEdge.a.set(this._bounds.right, this._bounds.top);
+        this.rightEdge.b.set(this._bounds.right, this._bounds.bottom);
         return this._size;
     }
 
@@ -406,6 +414,34 @@ class Node {
             if (i < this.rows.length - 1) ry += ROW_GAP;
         }
     }
+
+    beginDrag(p) {
+        const mode = this.rightEdge.closestOnSegment(p).dist <= NODE_RESIZE_THRESHOLD ? 'resize' : 'move';
+        this._drag = {
+            mode,
+            startX: p.x,
+            startY: p.y,
+            originX: this.point.x,
+            originY: this.point.y,
+            originTextColW: this._effectiveTextW,
+        };
+    }
+    endDrag() {
+        this._drag = null;
+    }
+
+    move(p) {
+        const d = this._drag;
+        if (!d) return null;
+        const dx = p.x - d.startX;
+        const dy = p.y - d.startY;
+        if (d.mode === 'move') {
+            this.point.set(d.originX + dx, d.originY + dy);
+        } else if (d.mode === 'resize') {
+            this.textColW = Math.max(0, d.originTextColW + dx);
+        }
+        return { dx, dy };
+    }
 }
 
 
@@ -471,6 +507,9 @@ function resize() {
     render();
 }
 
+window.addEventListener('resize', resize);
+resize();
+
 const tmp = new Point();
 function localPos(e) {
     const r = canvas.getBoundingClientRect();
@@ -507,16 +546,7 @@ function render() {
     ctx.clearRect(0, 0, W, H);
     drawGrid();
 
-    for (const node of nodes) {
-        node.draw(ctx);
-        const proj = node.closest(P);
-        dropLine.b.setFrom(proj);
-        dropLine.draw(ctx, {
-            color:    '#f80',
-            dash:     [4, 4], dotStart: false,
-            endColor: '#f80', endRadius:    3,
-        });
-    }
+    for (const node of nodes) node.draw(ctx);
 
     arrow.draw(ctx);
     const proj = arrow.closest(P);
@@ -539,8 +569,74 @@ function render() {
     ]);
 }
 
-window.addEventListener('resize', resize);
-resize();
+
+let activeDrag = null;
+
+function nodeAt(p, threshold) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+        const node = nodes[i];
+        if (node.closest(p).dist <= threshold)
+            return node;
+    }
+    return null;
+}
+
+function bringToFront(node) {
+    const idx = nodes.indexOf(node);
+    if (idx !== -1 && idx !== nodes.length - 1) {
+        nodes.splice(idx, 1);
+        nodes.push(node);
+        return true;
+    }
+}
+
+function updateCursor(p) {
+    if (activeDrag) {
+        canvas.style.cursor = activeDrag.dragMode === 'resize' ? 'ew-resize' : 'grabbing';
+        return;
+    }
+    const node = nodeAt(p, NODE_HIT_THRESHOLD);
+    if (node) {
+        const rHit = node.rightEdge.closestOnSegment(p);
+        canvas.style.cursor = rHit.dist <= NODE_RESIZE_THRESHOLD ? 'ew-resize' : 'grab';
+    } else
+        canvas.style.cursor = 'default';
+}
+
+canvas.addEventListener('pointerdown', e => {
+    const p = localPos(e);
+    const node = nodeAt(p, NODE_HIT_THRESHOLD);
+    if (node) {
+        if (bringToFront(node))
+            render();
+        node.beginDrag(p);
+        activeDrag = node;
+        updateCursor(p);
+        canvas.setPointerCapture(e.pointerId);
+    }
+});
+canvas.addEventListener('pointermove', e => {
+    const p = localPos(e);
+    P.setFrom(p);
+    if (activeDrag)
+        activeDrag.move(p);
+    updateCursor(p);
+    render();
+});
+canvas.addEventListener('pointerup', e => {
+    if (activeDrag) {
+        activeDrag.endDrag();
+        activeDrag = null;
+        canvas.releasePointerCapture(e.pointerId);
+        updateCursor(localPos(e));
+    }
+});
+canvas.addEventListener('pointercancel', () => {
+    if (activeDrag) {
+        activeDrag.endDrag();
+        activeDrag = null;
+    }
+});
 </script>
 </body>
 </html>
