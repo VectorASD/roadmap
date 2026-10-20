@@ -430,6 +430,16 @@ class Node {
         this._drag = null;
     }
 
+    rebase(p) {
+        if (this._drag) {
+            this._drag.startX = p.x;
+            this._drag.startY = p.y;
+            this._drag.originX = this.point.x;
+            this._drag.originY = this.point.y;
+            this._drag.originTextColW = this._effectiveTextW;
+        }
+    }
+
     move(p, snap = 0) {
         const d = this._drag;
         if (!d)
@@ -691,7 +701,43 @@ function loadState() {
 loadState();
 
 
+const DRAG_ACTIVATE_MS = 150;  // сколько ждать до принудительной активации
+const DRAG_ACTIVATE_PX = 16;   // или на сколько экранных пикселей сдвинуться
+
+let activation = null;
 let activeDrag = null;
+
+function beginActivation(e) {
+    activation = {
+        startScreenX: e.clientX,
+        startScreenY: e.clientY,
+        startTime: performance.now(),
+        activated: false,
+    };
+}
+
+function checkActivation(e) {
+    if (!activation || activation.activated) return true;
+    const elapsed = performance.now() - activation.startTime;
+    const dist = Math.hypot(
+        e.clientX - activation.startScreenX,
+        e.clientY - activation.startScreenY,
+    );
+    if (elapsed < DRAG_ACTIVATE_MS && dist < DRAG_ACTIVATE_PX)
+        return false;
+    activation.activated = true;
+
+    // отсечь накопленное движение: старт "настоящего" drag'а - здесь
+    if (pan) {
+        pan.startX = e.clientX;
+        pan.startY = e.clientY;
+        pan.camX = cam.x;
+        pan.camY = cam.y;
+    }
+    if (activeDrag)
+        activeDrag.rebase(worldPos(e));
+    return true;
+}
 
 function nodeAt(p, threshold) {
     for (let i = nodes.length - 1; i >= 0; i--) {
@@ -740,9 +786,18 @@ canvas.addEventListener('pointerdown', e => {
         pan = { startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y };
         canvas.style.cursor = 'grabbing';
     }
+    beginActivation(e);
     canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', e => {
+    if (!checkActivation(e)) {
+        // ещё "клик": обновляем P и курсор, но ничего не двигаем
+        const p = worldPos(e);
+        P.setFrom(p);
+        updateCursor(p);
+        return;
+    }
+
     if (pan) {
         cam.x = pan.camX + (e.clientX - pan.startX);
         cam.y = pan.camY + (e.clientY - pan.startY);
@@ -750,10 +805,10 @@ canvas.addEventListener('pointermove', e => {
         render();
         return;
     }
+
     const p = worldPos(e);
     P.setFrom(p);
-    if (activeDrag)
-        activeDrag.move(p, substep());
+    if (activeDrag) activeDrag.move(p, substep());
     updateCursor(p);
     render();
 });
@@ -761,11 +816,11 @@ canvas.addEventListener('pointerup', e => {
     if (activeDrag) {
         activeDrag.endDrag();
         activeDrag = null;
-    } else if (pan) {
+    } else if (pan)
         pan = null;
-    } else {
+    else
         return;
-    }
+    activation = null;
     canvas.releasePointerCapture(e.pointerId);
     updateCursor(worldPos(e));
     saveState();
@@ -775,7 +830,9 @@ canvas.addEventListener('pointercancel', () => {
         activeDrag.endDrag();
         activeDrag = null;
     }
-    if (pan) pan = null;
+    if (pan)
+        pan = null;
+    activation = null;
     canvas.style.cursor = 'default';
 });
 canvas.addEventListener('wheel', e => {
