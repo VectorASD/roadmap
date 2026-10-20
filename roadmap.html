@@ -127,6 +127,7 @@ class Arrow extends Line {
         this.d  = new Point();
         this.bc = new Line(b, this.c, 'BC');
         this.bd = new Line(b, this.d, 'BD');
+        this._drop = new Line(new Point(), new Point(), '');
         this.updateBarbs();
     }
 
@@ -168,6 +169,27 @@ class Arrow extends Line {
         super.draw(ctx, opts);
         this.bc.draw(ctx, { dotStart: false });
         this.bd.draw(ctx, { dotStart: false });
+    }
+
+    drawDebug(ctx, P) {
+        const proj = this.closest(P);
+
+        this._drop.a.setFrom(P);
+        this._drop.b.setFrom(proj);
+        this._drop.draw(ctx, {
+            color:      '#f80',
+            dash:       [4, 4],
+            startColor: '#f44', startRadius: 6,
+            endColor:   '#f80', endRadius:   3,
+        });
+
+        const { X, Y, len } = this.segmentCoords(P);
+        const closest = `${proj.line.name} (t = ${proj.t.toFixed(2)})`;
+        drawInfo([
+            `P = (${P.x.toFixed(1)}, ${P.y.toFixed(1)})`,
+            `X = ${X.toFixed(1)}  Y = ${Y.toFixed(1)}  |AB| = ${len.toFixed(1)}`,
+            `расстояние = ${proj.dist.toFixed(2)}  (до ${closest})`,
+        ]);
     }
 }
 
@@ -673,9 +695,8 @@ function drawInfo(lines) {
 const A = new Point(1020, 320);
 const B = new Point(1600, 620);
 const P = new Point(400, 300);
-
-const arrow    = new Arrow(A, B);
-const dropLine = new Line(P, new Point(), '');
+const arrow = new Arrow(A, B);
+const ARROW_DEBUG = false;
 
 function render() {
     const dpr = window.devicePixelRatio || 1;
@@ -684,27 +705,11 @@ function render() {
     ctx.setTransform(dpr * cam.k, 0, 0, dpr * cam.k, dpr * cam.x, dpr * cam.y);
 
     drawGrid();
-    for (const node of nodes) node.draw(ctx);
+    for (const node of nodes)
+        node.draw(ctx);
     arrow.draw(ctx);
-
-    const proj = arrow.closest(P);
-
-    dropLine.b.setFrom(proj);
-    dropLine.draw(ctx, {
-        color:      '#f80',
-        dash:       [4, 4],
-        startColor: '#f44', startRadius: 6,
-        endColor:   '#f80', endRadius:   3,
-    });
-
-    const { X, Y, len } = arrow.segmentCoords(P);
-    const closest = `${proj.line.name} (t = ${proj.t.toFixed(2)})`;
-
-    drawInfo([
-        `P = (${P.x.toFixed(1)}, ${P.y.toFixed(1)})`,
-        `X = ${X.toFixed(1)}  Y = ${Y.toFixed(1)}  |AB| = ${len.toFixed(1)}`,
-        `расстояние = ${proj.dist.toFixed(2)}  (до ${closest})`,
-    ]);
+    if (ARROW_DEBUG)
+        arrow.drawDebug(ctx, P);
 }
 
 
