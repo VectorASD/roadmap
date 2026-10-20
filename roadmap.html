@@ -111,16 +111,64 @@ class Line {
     }
 }
 
+class Arrow extends Line {
+    constructor(a, b, name = '') {
+        super(a, b, name);  // arrow IS the AB line
+        this.c  = new Point();
+        this.d  = new Point();
+        this.bc = new Line(b, this.c, 'BC');
+        this.bd = new Line(b, this.d, 'BD');
+        this.updateBarbs();
+    }
+
+    // Пересчитывает C и D из текущих A и B. Мутирует существующие Points,
+    // поэтому bc/bd держат валидные ссылки без пересоздания.
+    updateBarbs() {
+        const { len, ux, uy } = this.metrics();
+        const c45 = Math.SQRT1_2;
+        const barb = len / 4;
+        this.c.set(
+            this.b.x + c45 * barb * ( uy - ux),
+            this.b.y + c45 * barb * (-ux - uy),
+        );
+        this.d.set(
+            this.b.x + c45 * barb * (-ux - uy),
+            this.b.y + c45 * barb * ( ux - uy),
+        );
+        return this;
+    }
+
+    // Сеттеры - единственный безопасный способ двинуть C и D.
+    // Прямая мутация a.x/a.y возможна, но тогда придётся руками трогать updateBarbs().
+    setA(p)   { this.a.setFrom(p); return this.updateBarbs(); }
+    setB(p)   { this.b.setFrom(p); return this.updateBarbs(); }
+    set(a, b) { this.a.setFrom(a); this.b.setFrom(b); return this.updateBarbs(); }
+
+    // Ближайшая точка на всей стрелке (AB, BC, BD).
+    // Возвращает Point с .dist, .t и .line (какая из трёх линий).
+    closest(p) {
+        const hits = [this, this.bc, this.bd].map(line => {
+            const hit = line.closestOnSegment(p);
+            hit.line = line;
+            return hit;
+        });
+        return hits.reduce((a, b) => a.dist <= b.dist ? a : b);
+    }
+
+    draw(ctx, opts = {}) {
+        super.draw(ctx, opts);
+        this.bc.draw(ctx, { dotStart: false });
+        this.bd.draw(ctx, { dotStart: false });
+    }
+}
+
+
 let W = 0, H = 0;
-const A = new Point(520, 320);
-const B = new Point(1100, 620);
-const C = new Point();
-const D = new Point();
+const A = new Point(1020, 320);
+const B = new Point(1600, 620);
 const P = new Point(400, 300);
 
-const AB = new Line(A, B, 'AB');
-const BC = new Line(B, C, 'BC');
-const BD = new Line(B, D, 'BD');
+const arrow    = new Arrow(A, B, 'AB');
 const dropLine = new Line(P, new Point(), '');
 
 function resize() {
@@ -171,49 +219,24 @@ function render() {
     ctx.clearRect(0, 0, W, H);
     drawGrid();
 
-    // C и D - усики стрелочки AB
-    const { len, ux, uy } = AB.metrics();
-    const c45 = Math.SQRT1_2;
-    const barb = len / 4;
-    C.set(
-        B.x + c45 * barb * ( uy - ux),
-        B.y + c45 * barb * (-ux - uy),
-    );
-    D.set(
-        B.x + c45 * barb * (-ux - uy),
-        B.y + c45 * barb * ( ux - uy),
-    );
-
-    // отрисовка
-    AB.draw(ctx);
-    BC.draw(ctx, { dotStart: false });
-    BD.draw(ctx, { dotStart: false });
-
-    // hit-test: hits + reduce
-    const hits = [AB, BC, BD].map(line => {
-        const hit = line.closestOnSegment(P);
-        hit.line = line;
-        return hit;
-    });
-    const proj = hits.reduce((a, b) => a.dist <= b.dist ? a : b);
-    console.log(proj);
+    arrow.draw(ctx);
+    const proj = arrow.closest(P);
 
     dropLine.b.setFrom(proj);
     dropLine.draw(ctx, {
         color:      '#f80',
         dash:       [4, 4],
-        startColor: '#f44', startRadius: 6,  // точка P — красная
-        endColor:   '#f80', endRadius:   3,  // точка proj — оранжевая
+        startColor: '#f44', startRadius: 6,  // точка P - красная
+        endColor:   '#f80', endRadius:   3,  // точка proj - оранжевая
     });
 
-    const { X, Y } = AB.segmentCoords(P);
-    const dist = proj.dist;
+    const { X, Y, len } = arrow.segmentCoords(P);
     const closest = `${proj.line.name} (t = ${proj.t.toFixed(2)})`;
 
     drawInfo([
         `P = (${P.x.toFixed(1)}, ${P.y.toFixed(1)})`,
         `X = ${X.toFixed(1)}  Y = ${Y.toFixed(1)}  |AB| = ${len.toFixed(1)}`,
-        `расстояние = ${dist.toFixed(2)}  (до ${closest})`,
+        `расстояние = ${proj.dist.toFixed(2)}  (до ${closest})`,
     ]);
 }
 
