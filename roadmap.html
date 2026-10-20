@@ -430,13 +430,20 @@ class Node {
         this._drag = null;
     }
 
-    move(p) {
+    move(p, snap = 0) {
         const d = this._drag;
-        if (!d) return null;
+        if (!d)
+            return null;
         const dx = p.x - d.startX;
         const dy = p.y - d.startY;
         if (d.mode === 'move') {
-            this.point.set(d.originX + dx, d.originY + dy);
+            let x = d.originX + dx;
+            let y = d.originY + dy;
+            if (snap > 0) {
+                x = Math.round(x / snap) * snap;
+                y = Math.round(y / snap) * snap;
+            }
+            this.point.set(x, y);
         } else if (d.mode === 'resize') {
             this.textColW = Math.max(0, d.originTextColW + dx);
         }
@@ -487,14 +494,20 @@ const nodes = [
 ];
 
 
+const GRID_DIVISIONS = 5;
+
+function gridStep() {
+    let step = 50;
+    while (step * cam.k < 40) step *= 2;
+    while (step * cam.k > 80) step /= 2;
+    return step;
+}
+
+function substep() {
+    return gridStep() / GRID_DIVISIONS;
+}
+
 let W = 0, H = 0;
-const A = new Point(1020, 320);
-const B = new Point(1600, 620);
-const P = new Point(400, 300);
-
-const arrow    = new Arrow(A, B, 'AB');
-const dropLine = new Line(P, new Point(), '');
-
 const cam = { x: 0, y: 0, k: 1 };
 let pan = null;
 
@@ -510,7 +523,6 @@ function resize() {
 }
 
 const tmp = new Point();
-
 function screenToWorld(sx, sy) {
     return tmp.set((sx - cam.x) / cam.k, (sy - cam.y) / cam.k);
 }
@@ -528,24 +540,30 @@ function zoomAt(sx, sy, factor) {
     cam.k = newK;
 }
 
-canvas.addEventListener('pointermove', e => {
-    P.setFrom(worldPos(e));
-    render();
-});
-
 function drawGrid() {
     const wl = -cam.x / cam.k;
     const wt = -cam.y / cam.k;
     const wr = wl + W / cam.k;
     const wb = wt + H / cam.k;
 
-    let step = 50;
-    while (step * cam.k < 40) step *= 2;
-    while (step * cam.k > 80) step /= 2;
+    const step = gridStep();
+    const sub  = step / GRID_DIVISIONS;
 
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = 1 / cam.k;
+    // подсетка - тоньше и темнее
+    ctx.strokeStyle = '#1d1d1d';
+    ctx.lineWidth = 0.8 / cam.k;
+    const xs0 = Math.floor(wl / sub) * sub;
+    for (let x = xs0; x <= wr; x += sub) {
+        ctx.beginPath(); ctx.moveTo(x, wt); ctx.lineTo(x, wb); ctx.stroke();
+    }
+    const ys0 = Math.floor(wt / sub) * sub;
+    for (let y = ys0; y <= wb; y += sub) {
+        ctx.beginPath(); ctx.moveTo(wl, y); ctx.lineTo(wr, y); ctx.stroke();
+    }
 
+    // основная сетка
+    ctx.strokeStyle = '#242424';
+    ctx.lineWidth = 1.2 / cam.k;
     const x0 = Math.floor(wl / step) * step;
     for (let x = x0; x <= wr; x += step) {
         ctx.beginPath(); ctx.moveTo(x, wt); ctx.lineTo(x, wb); ctx.stroke();
@@ -569,6 +587,13 @@ function drawInfo(lines) {
     }
     ctx.restore();
 }
+
+const A = new Point(1020, 320);
+const B = new Point(1600, 620);
+const P = new Point(400, 300);
+
+const arrow    = new Arrow(A, B, 'AB');
+const dropLine = new Line(P, new Point(), '');
 
 function render() {
     const dpr = window.devicePixelRatio || 1;
@@ -727,7 +752,8 @@ canvas.addEventListener('pointermove', e => {
     }
     const p = worldPos(e);
     P.setFrom(p);
-    if (activeDrag) activeDrag.move(p);
+    if (activeDrag)
+        activeDrag.move(p, substep());
     updateCursor(p);
     render();
 });
