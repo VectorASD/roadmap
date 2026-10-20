@@ -415,8 +415,8 @@ class Node {
         }
     }
 
-    beginDrag(p) {
-        const mode = this.rightEdge.closestOnSegment(p).dist <= NODE_RESIZE_THRESHOLD ? 'resize' : 'move';
+    beginDrag(p, resizeThreshold = NODE_RESIZE_THRESHOLD) {
+        const mode = this.rightEdge.closestOnSegment(p).dist <= resizeThreshold ? 'resize' : 'move';
         this._drag = {
             mode,
             startX: p.x,
@@ -495,6 +495,9 @@ const P = new Point(400, 300);
 const arrow    = new Arrow(A, B, 'AB');
 const dropLine = new Line(P, new Point(), '');
 
+const cam = { x: 0, y: 0, k: 1 };
+let pan = null;
+
 function resize() {
     const dpr = window.devicePixelRatio || 1;
     W = window.innerWidth;
@@ -503,7 +506,6 @@ function resize() {
     canvas.height = Math.round(H * dpr);
     canvas.style.width  = W + 'px';
     canvas.style.height = H + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     render();
 }
 
@@ -511,28 +513,56 @@ window.addEventListener('resize', resize);
 resize();
 
 const tmp = new Point();
-function localPos(e) {
+
+function screenToWorld(sx, sy) {
+    return tmp.set((sx - cam.x) / cam.k, (sy - cam.y) / cam.k);
+}
+
+function worldPos(e) {
     const r = canvas.getBoundingClientRect();
-    return tmp.set(e.clientX - r.left, e.clientY - r.top);
+    return screenToWorld(e.clientX - r.left, e.clientY - r.top);
+}
+
+function zoomAt(sx, sy, factor) {
+    const newK = Math.max(0.1, Math.min(8, cam.k * factor));
+    const f = newK / cam.k;
+    cam.x = sx - f * (sx - cam.x);
+    cam.y = sy - f * (sy - cam.y);
+    cam.k = newK;
 }
 
 canvas.addEventListener('pointermove', e => {
-    P.setFrom(localPos(e));
+    P.setFrom(worldPos(e));
     render();
 });
 
 function drawGrid() {
+    const wl = -cam.x / cam.k;
+    const wt = -cam.y / cam.k;
+    const wr = wl + W / cam.k;
+    const wb = wt + H / cam.k;
+
+    let step = 50;
+    while (step * cam.k < 40) step *= 2;
+    while (step * cam.k > 80) step /= 2;
+
     ctx.strokeStyle = '#222';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += 50) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    ctx.lineWidth = 1 / cam.k;
+
+    const x0 = Math.floor(wl / step) * step;
+    for (let x = x0; x <= wr; x += step) {
+        ctx.beginPath(); ctx.moveTo(x, wt); ctx.lineTo(x, wb); ctx.stroke();
     }
-    for (let y = 0; y < H; y += 50) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    const y0 = Math.floor(wt / step) * step;
+    for (let y = y0; y <= wb; y += step) {
+        ctx.beginPath(); ctx.moveTo(wl, y); ctx.lineTo(wr, y); ctx.stroke();
     }
 }
 
 function drawInfo(lines) {
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = '#eee';
     ctx.font = '14px monospace';
     let ty = 24;
@@ -540,15 +570,19 @@ function drawInfo(lines) {
         ctx.fillText(line, 16, ty);
         ty += 20;
     }
+    ctx.restore();
 }
 
 function render() {
-    ctx.clearRect(0, 0, W, H);
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr * cam.k, 0, 0, dpr * cam.k, dpr * cam.x, dpr * cam.y);
+
     drawGrid();
-
     for (const node of nodes) node.draw(ctx);
-
     arrow.draw(ctx);
+
     const proj = arrow.closest(P);
 
     dropLine.b.setFrom(proj);
@@ -595,31 +629,43 @@ function updateCursor(p) {
         canvas.style.cursor = activeDrag.dragMode === 'resize' ? 'ew-resize' : 'grabbing';
         return;
     }
-    const node = nodeAt(p, NODE_HIT_THRESHOLD);
+    if (pan) {
+        canvas.style.cursor = 'grabbing';
+        return;
+    }
+    const node = nodeAt(p, NODE_HIT_THRESHOLD / cam.k);
     if (node) {
         const rHit = node.rightEdge.closestOnSegment(p);
-        canvas.style.cursor = rHit.dist <= NODE_RESIZE_THRESHOLD ? 'ew-resize' : 'grab';
+        canvas.style.cursor = rHit.dist <= NODE_RESIZE_THRESHOLD / cam.k ? 'ew-resize' : 'grab';
     } else
         canvas.style.cursor = 'default';
 }
 
 canvas.addEventListener('pointerdown', e => {
-    const p = localPos(e);
-    const node = nodeAt(p, NODE_HIT_THRESHOLD);
+    const p = worldPos(e);
+    const node = nodeAt(p, NODE_HIT_THRESHOLD / cam.k);
     if (node) {
-        if (bringToFront(node))
-            render();
-        node.beginDrag(p);
+        if (bringToFront(node)) render();
+        node.beginDrag(p, NODE_RESIZE_THRESHOLD / cam.k);
         activeDrag = node;
         updateCursor(p);
-        canvas.setPointerCapture(e.pointerId);
+    } else {
+        pan = { startX: e.clientX, startY: e.clientY, camX: cam.x, camY: cam.y };
+        canvas.style.cursor = 'grabbing';
     }
+    canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener('pointermove', e => {
-    const p = localPos(e);
+    if (pan) {
+        cam.x = pan.camX + (e.clientX - pan.startX);
+        cam.y = pan.camY + (e.clientY - pan.startY);
+        P.setFrom(worldPos(e));
+        render();
+        return;
+    }
+    const p = worldPos(e);
     P.setFrom(p);
-    if (activeDrag)
-        activeDrag.move(p);
+    if (activeDrag) activeDrag.move(p);
     updateCursor(p);
     render();
 });
@@ -627,16 +673,36 @@ canvas.addEventListener('pointerup', e => {
     if (activeDrag) {
         activeDrag.endDrag();
         activeDrag = null;
-        canvas.releasePointerCapture(e.pointerId);
-        updateCursor(localPos(e));
+    } else if (pan) {
+        pan = null;
+    } else {
+        return;
     }
+    canvas.releasePointerCapture(e.pointerId);
+    updateCursor(worldPos(e));
 });
 canvas.addEventListener('pointercancel', () => {
     if (activeDrag) {
         activeDrag.endDrag();
         activeDrag = null;
     }
+    if (pan) pan = null;
+    canvas.style.cursor = 'default';
 });
+canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left;
+    const sy = e.clientY - r.top;
+    const dy = e.deltaMode === 1 ? e.deltaY * 16
+             : e.deltaMode === 2 ? e.deltaY * 400
+             : e.deltaY;
+    zoomAt(sx, sy, Math.pow(1.1, -dy / 100));
+    P.setFrom(worldPos(e));
+    render();
+}, { passive: false }); // passive обязателен - без него preventDefault в wheel молча игнорируется
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
 </script>
 </body>
 </html>
