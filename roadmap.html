@@ -163,6 +163,294 @@ class Arrow extends Line {
 }
 
 
+// Жадный перенос по словам. Возвращает массив строк.
+function wrapText(ctx, text, maxWidth) {
+    const words = String(text).split(/\s+/).filter(Boolean);
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+        const test = cur ? cur + ' ' + w : w;
+        if (ctx.measureText(test).width <= maxWidth) {
+            cur = test;
+        } else {
+            if (cur) lines.push(cur);
+            cur = w;
+        }
+    }
+    if (cur) lines.push(cur);
+    return lines;
+}
+
+
+const CHECK_SIZE    = 16;
+const CHECK_RADIUS  = 3;
+const CHECK_COL_W   = 26;
+
+const CHECK_COLORS = {
+    todo:     { fill: '#ffffff', stroke: '#555555', mark: null      },
+    doing:    { fill: '#ffffff', stroke: '#ffaa00', mark: '#ffaa00' },
+    done:     { fill: '#ffffff', stroke: '#44aa44', mark: '#44aa44' },
+    blocked:  { fill: '#ffffff', stroke: '#ff4444', mark: '#ff4444' },
+    deferred: { fill: '#ffffff', stroke: '#888888', mark: null      },
+    na:       { fill: '#888888', stroke: '#555555', mark: '#555555' },
+};
+
+function drawCheckbox(ctx, x, y, size, type) {
+    const c = CHECK_COLORS[type] || CHECK_COLORS.todo;
+    const r = CHECK_RADIUS;
+
+    ctx.beginPath();
+    ctx.roundRect(x, y, size, size, r);
+    ctx.fillStyle = c.fill;
+    ctx.fill();
+
+    if (type === 'doing') {
+        ctx.save();
+        ctx.clip();
+        ctx.fillStyle = c.stroke;
+        ctx.fillRect(x, y, size / 2, size);
+        ctx.restore();
+    }
+
+    ctx.beginPath();
+    ctx.roundRect(x, y, size, size, r);
+    ctx.strokeStyle = c.stroke;
+    ctx.lineWidth = 1.5;
+    if (type === 'deferred') ctx.setLineDash([2, 2]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (type === 'done') {
+        ctx.strokeStyle = c.mark;
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x + 3, y + size / 2);
+        ctx.lineTo(x + size * 0.42, y + size - 4);
+        ctx.lineTo(x + size - 3, y + 3);
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+    } else if (type === 'blocked') {
+        ctx.strokeStyle = c.mark;
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x + 4, y + 4);
+        ctx.lineTo(x + size - 4, y + size - 4);
+        ctx.moveTo(x + size - 4, y + 4);
+        ctx.lineTo(x + 4, y + size - 4);
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+    } else if (type === 'na') {
+        ctx.strokeStyle = c.mark;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x + 3, y + size / 2);
+        ctx.lineTo(x + size - 3, y + size / 2);
+        ctx.stroke();
+    }
+}
+
+
+const NODE_PAD    = 14;
+const HEADER_H    = 28;
+const ROW_GAP     = 8;
+const TEXT_PAD    = 8;
+const TEXT_MIN_W  = 200;
+const TEXT_LINE_H = 18;
+
+class Node {
+    constructor(opts) {
+        this.point     = opts.point || new Point();
+        this.title     = opts.title ?? '';
+        this.checkCols = opts.checkCols ?? 1;
+        this.textColW  = opts.textColW ?? TEXT_MIN_W;   // user target
+        this.rows      = opts.rows ?? [];
+        this._lines    = null;
+        this._size     = null;
+        this._bounds   = null;
+        this._effectiveTextW = 0;
+    }
+
+    measure(ctx) {
+        ctx.font = '13px monospace';
+
+        // 1. Собираем границы: naturalMax (вся строка в 1 линию)
+        //    и longestWord (ниже нельзя, слова не ломаются)
+        let naturalMax = 0;
+        let longestWord = 0;
+        for (const row of this.rows) {
+            const t = String(row.text ?? '');
+            const w = ctx.measureText(t).width;
+            if (w > naturalMax) naturalMax = w;
+            for (const word of t.split(/\s+/).filter(Boolean)) {
+                const ww = ctx.measureText(word).width;
+                if (ww > longestWord) longestWord = ww;
+            }
+        }
+
+        // 2. Целевая ширина для wrap: user target, clamped
+        let targetW;
+        if (this.rows.length === 0) {
+            targetW = 0;
+        } else {
+            targetW = Math.max(longestWord, Math.min(this.textColW, naturalMax));
+        }
+
+        // 3. Wrap по target
+        this._lines = this.rows.map(row =>
+            wrapText(ctx, String(row.text ?? ''), targetW)
+        );
+
+        // 4. Видимая ширина = max по фактическим строкам после wrap
+        let actualW = 0;
+        for (const lines of this._lines) {
+            for (const line of lines) {
+                const w = ctx.measureText(line).width;
+                if (w > actualW) actualW = w;
+            }
+        }
+        this._effectiveTextW = actualW;
+
+        // 5. Дальше - layout по actualW, не по targetW
+        ctx.font = 'bold 14px monospace';
+        const titleW = ctx.measureText(this.title).width;
+
+        const textColW = actualW + TEXT_PAD * 2;
+        const bodyW = NODE_PAD * 2 + this.checkCols * CHECK_COL_W + textColW;
+        const w = Math.max(bodyW, titleW + NODE_PAD * 2);
+
+        let rowsH = 0;
+        for (let i = 0; i < this._lines.length; i++) {
+            rowsH += Math.max(CHECK_SIZE, this._lines[i].length * TEXT_LINE_H);
+            if (i < this._lines.length - 1) rowsH += ROW_GAP;
+        }
+        const h = NODE_PAD + HEADER_H + ROW_GAP + rowsH + NODE_PAD;
+
+        this._size = { w, h };
+        this._bounds = {
+            left:   this.point.x,
+            top:    this.point.y,
+            right:  this.point.x + w,
+            bottom: this.point.y + h,
+        };
+        return this._size;
+    }
+
+    bounds() {
+        if (!this._bounds) throw new Error('Node.measure(ctx) first');
+        return this._bounds;
+    }
+
+    // Точка на прямоугольнике, ближайшая к p. Возвращает Point с .dist
+    closest(p) {
+        const { left, top, right, bottom } = this.bounds();
+        const cx = p.x < left ? left : p.x < right ? p.x : right;
+        const cy = p.y < top  ? top : p.y < bottom ? p.y : bottom;
+
+        const hit = new Point(cx, cy);
+        hit.dist = p.distTo(hit);
+        return hit;
+    }
+
+    draw(ctx) {
+        const { w } = this.measure(ctx);
+        const { left: x, top: y, bottom } = this.bounds();
+
+        // карточка
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, bottom - y, 8);
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fill();
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // заголовок
+        ctx.font = 'bold 14px monospace';
+        ctx.fillStyle = '#eee';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(this.title, x + NODE_PAD, y + 0.75 * NODE_PAD + 0.5 * HEADER_H);
+
+        // строки (переменная высота)
+        let ry = y + NODE_PAD + HEADER_H + 0.5 * ROW_GAP;
+        for (let i = 0; i < this.rows.length; i++) {
+            const row   = this.rows[i];
+            const lines = this._lines[i];
+            const rowH  = Math.max(CHECK_SIZE, lines.length * TEXT_LINE_H);
+
+            ctx.fillStyle = i % 2 ? '#28283a' : '#202030';
+            ctx.fillRect(x + NODE_PAD, ry - 0.5 * ROW_GAP, w - 2 * NODE_PAD, rowH + ROW_GAP);
+
+            // чекбоксы - по вертикали по центру строки
+            const cbY = ry + (rowH - CHECK_SIZE) / 2;
+            for (let c = 0; c < this.checkCols; c++) {
+                const cbX = x + NODE_PAD + c * CHECK_COL_W + (CHECK_COL_W - CHECK_SIZE) / 2;
+                const type = (row.checks && row.checks[c]) || 'todo';
+                drawCheckbox(ctx, cbX, cbY, CHECK_SIZE, type);
+            }
+
+            // текст - блок строк по вертикали по центру
+            const tx = x + NODE_PAD + this.checkCols * CHECK_COL_W + TEXT_PAD;
+            const blockH = lines.length * TEXT_LINE_H;
+            const y0 = ry + (rowH - blockH) / 2 + TEXT_LINE_H / 2;
+            ctx.font = '13px monospace';
+            ctx.fillStyle = '#eee';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'left';
+            for (let li = 0; li < lines.length; li++)
+                ctx.fillText(lines[li], tx, y0 + li * TEXT_LINE_H);
+
+            ry += rowH;
+            if (i < this.rows.length - 1) ry += ROW_GAP;
+        }
+    }
+}
+
+
+const nodes = [
+    new Node({
+        point: new Point(60, 240),
+        title: 'C1 - compiler frontend',
+        checkCols: 2,
+        textColW: 410,
+        rows: [
+            { checks: ['done', 'done'],    text: 'pegen parser' },
+            { checks: ['done', 'done'],    text: 'visitor' },
+            { checks: ['done', 'doing'],   text: 'own IR' },
+            { checks: ['todo', 'todo'],    text: 'IR executor' },
+            { checks: ['todo', 'todo'],    text: 'tests before optimizations' },
+            { checks: ['todo', 'blocked'], text: 'tests after optimizations (heavy cases: async generators with try-finally inside async loops, manual __iter__ / __next__ / coroutines, exit, next)' },
+        ],
+    }),
+    new Node({
+        point: new Point(620, 560),
+        title: 'JNI_RPC',
+        checkCols: 1,
+        rows: [
+            { checks: ['done'],     text: 'JNI calls' },
+            { checks: ['done'],     text: 'RPC framing' },
+            { checks: ['done'],     text: 'primitives serialization' },
+            { checks: ['doing'],    text: 'objects serialization' },
+            { checks: ['todo'],     text: 'batch calls' },
+            { checks: ['deferred'], text: 'static fields' },
+        ],
+    }),
+    new Node({
+        point: new Point(60, 560),
+        title: 'GAME - engine',
+        checkCols: 3,
+        rows: [
+            { checks: ['done', 'done', 'done'],  text: 'OpenGL context' },
+            { checks: ['done', 'doing', 'todo'], text: 'mesh rendering' },
+            { checks: ['todo', 'todo', 'todo'],  text: 'ball physics' },
+            { checks: ['todo', 'todo', 'na'],    text: 'online (v2)' },
+        ],
+    }),
+];
+
+
 let W = 0, H = 0;
 const A = new Point(1020, 320);
 const B = new Point(1600, 620);
@@ -219,6 +507,17 @@ function render() {
     ctx.clearRect(0, 0, W, H);
     drawGrid();
 
+    for (const node of nodes) {
+        node.draw(ctx);
+        const proj = node.closest(P);
+        dropLine.b.setFrom(proj);
+        dropLine.draw(ctx, {
+            color:    '#f80',
+            dash:     [4, 4], dotStart: false,
+            endColor: '#f80', endRadius:    3,
+        });
+    }
+
     arrow.draw(ctx);
     const proj = arrow.closest(P);
 
@@ -226,8 +525,8 @@ function render() {
     dropLine.draw(ctx, {
         color:      '#f80',
         dash:       [4, 4],
-        startColor: '#f44', startRadius: 6,  // точка P - красная
-        endColor:   '#f80', endRadius:   3,  // точка proj - оранжевая
+        startColor: '#f44', startRadius: 6,
+        endColor:   '#f80', endRadius:   3,
     });
 
     const { X, Y, len } = arrow.segmentCoords(P);
